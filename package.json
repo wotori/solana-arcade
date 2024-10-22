@@ -21,6 +21,6 @@
     "typescript": "^5.6.3"
   },
   "scripts": {
-    "test": "mocha -r ts-node/register tests/**/*.test.ts"
+    "test": "anchor test --skip-local-validator"
   }
 }

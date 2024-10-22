@@ -1,6 +1,5 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke, system_instruction};
-use std::collections::BinaryHeap;
 
 declare_id!("CSSnstKmeBuQoDxpdjUd4fdqXwtM237PmTyexjizdrBN");
 
@@ -72,22 +71,23 @@ pub mod arcade_rewards {
             CustomError::Unauthorized
         );
 
-        // Create a binary heap from the top users
-        let mut heap: BinaryHeap<_> = arcade_account
+        // Collect existing scores and add the new one
+        let mut scores: Vec<UserScore> = arcade_account
             .top_users
             .iter()
             .filter_map(|x| x.clone())
             .collect();
 
-        // Insert the new user score
-        heap.push(user_score.clone());
+        scores.push(user_score);
 
-        // Ensure the heap doesn't exceed the maximum number of top scores
-        if heap.len() > arcade_account.max_top_scores as usize {
-            heap.pop();
-        }
-        // Update the top users list from the heap
-        arcade_account.top_users = heap.into_sorted_vec().into_iter().rev().map(Some).collect();
+        // Sort the scores in descending order
+        scores.sort_by(|a, b| b.score.cmp(&a.score));
+
+        // Keep only the top N scores
+        scores.truncate(arcade_account.max_top_scores as usize);
+
+        // Update the top_users
+        arcade_account.top_users = scores.into_iter().map(Some).collect();
 
         Ok(())
     }

@@ -71,7 +71,7 @@ describe("Add User Score", () => {
           arcadeAccount: arcadeAccountPDA,
           admin: admin.publicKey,
           systemProgram: anchor.web3.SystemProgram.programId,
-        })
+        } as any)
         .signers([admin])
         .rpc();
     }
@@ -103,7 +103,7 @@ describe("Add User Score", () => {
         arcadeAccount: arcadeAccountPDA,
         admin: admin.publicKey,
         systemProgram: anchor.web3.SystemProgram.programId,
-      })
+      } as any)
       .signers([admin])
       .rpc();
 
@@ -124,10 +124,10 @@ describe("Add User Score", () => {
     // Adjust the assertions based on the observed order
     expect(account.topUsers.length).to.equal(3);
     // TODO: ...
-    // expect(account.topUsers[0]?.nickname).to.equal("Dave");
-    // expect(account.topUsers[1]?.nickname).to.equal("Charlie");
-    // expect(account.topUsers[2]?.nickname).to.equal("Bob");
-    // expect(account.topUsers.some((user: any) => user?.nickname === "Alice")).to
-    //   .be.false;
+    expect(account.topUsers[0]?.nickname).to.equal("Dave");
+    expect(account.topUsers[1]?.nickname).to.equal("Charlie");
+    expect(account.topUsers[2]?.nickname).to.equal("Bob");
+    expect(account.topUsers.some((user: any) => user?.nickname === "Alice")).to
+      .be.false;
   });
 });
