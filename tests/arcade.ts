@@ -240,4 +240,49 @@ describe("arcade_rewards", () => {
     //   expect(account.topUsers.some((user) => user?.nickname === "Alice")).to.be
     //     .false; // TODO: uncomment, should be false
   });
+
+  // Get state
+  it("Retrieves the correct state from get_state functions", async () => {
+    const maxTopScores = 5;
+    const pricePerGame = new anchor.BN(web3.LAMPORTS_PER_SOL).div(
+      new anchor.BN(10)
+    ); // 0.1 SOL
+
+    // Play a game to modify state
+    const user = await createUser();
+    await program.methods
+      .play(pricePerGame)
+      .accounts({
+        arcadeAccount: arcadeAccountPDA,
+        user: user.publicKey,
+        admin: admin.publicKey,
+        systemProgram: web3.SystemProgram.programId,
+      } as any)
+      .signers([user])
+      .rpc();
+
+    // Fetch the updated arcade account
+    const account = await program.account.arcadeAccount.fetch(arcadeAccountPDA);
+
+    // Get total price distributed
+    const totalPriceDistributed = account.totalPriceDistributed;
+    expect(totalPriceDistributed.toNumber()).to.equal(0); // Assuming no prizes have been distributed yet
+
+
+    // TODO: ...
+    // // Get game counter
+    // const gameCounter = account.gameCounter;
+    // expect(gameCounter.toNumber()).to.equal(2);
+
+    // // Get price per game
+    // const currentPrice = account.pricePerGame;
+    // expect(currentPrice.toNumber()).to.equal(pricePerGame.toNumber());
+
+    // // Get top users
+    // const topUsers = account.topUsers;
+    // expect(topUsers.length).to.equal(maxTopScores);
+    // topUsers.forEach((user: any) => {
+    //   expect(user).to.be.null;
+    // });
+  });
 });
