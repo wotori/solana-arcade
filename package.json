@@ -19,5 +19,8 @@
     "prettier": "^2.6.2",
     "ts-mocha": "^10.0.0",
     "typescript": "^5.6.3"
+  },
+  "scripts": {
+    "test": "mocha -r ts-node/register tests/**/*.test.ts"
   }
 }
