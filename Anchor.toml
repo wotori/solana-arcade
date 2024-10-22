@@ -5,7 +5,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-arcade2 = "DRdEYtHZtsbwi5ggsENEFEY4nRb6H72eiVR6bK6qx4UE"
+arcade = "4vvLSqVKUwLigvkF6rtGsi7X6k5nCidb2gvbudhoKHvL"
+
+[programs.devnet]
+arcade = "4vvLSqVKUwLigvkF6rtGsi7X6k5nCidb2gvbudhoKHvL"
 
 [registry]
 url = "https://api.apr.dev"

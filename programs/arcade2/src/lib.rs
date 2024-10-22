@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke, system_instruction};
 use std::collections::BinaryHeap;
 
-declare_id!("CrxQKgLZU7bnm5yPsn4tMvnK9qBWDCtzoz3NCvk39eV3");
+declare_id!("4vvLSqVKUwLigvkF6rtGsi7X6k5nCidb2gvbudhoKHvL");
 
 #[program]
 pub mod arcade_rewards {
@@ -23,6 +23,7 @@ pub mod arcade_rewards {
         arcade_account.total_price_distributed = 0;
         arcade_account.game_counter = 0;
         arcade_account.top_users = vec![None; max_top_scores as usize];
+        
         Ok(())
     }
 
