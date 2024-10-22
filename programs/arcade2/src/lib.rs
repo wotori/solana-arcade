@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke, system_instruction};
 use std::collections::BinaryHeap;
 
-declare_id!("4vvLSqVKUwLigvkF6rtGsi7X6k5nCidb2gvbudhoKHvL");
+declare_id!("CSSnstKmeBuQoDxpdjUd4fdqXwtM237PmTyexjizdrBN");
 
 #[program]
 pub mod arcade_rewards {
@@ -28,7 +28,7 @@ pub mod arcade_rewards {
 
     pub fn play(ctx: Context<Play>, lamports: u64) -> Result<()> {
         let arcade_account_key = ctx.accounts.arcade_account.key();
-        let admin_key = ctx.accounts.admin.key(); // Added admin key
+        let admin_key = ctx.accounts.admin.key();
 
         let arcade_account = &mut ctx.accounts.arcade_account;
         require!(
@@ -53,7 +53,7 @@ pub mod arcade_rewards {
             &system_instruction::transfer(&user_key, &admin_key, lamports / 2),
             &[
                 ctx.accounts.user.to_account_info(),
-                ctx.accounts.admin.to_account_info(), // Include admin account
+                ctx.accounts.admin.to_account_info(),
                 ctx.accounts.system_program.to_account_info(),
             ],
         )?;
@@ -86,7 +86,6 @@ pub mod arcade_rewards {
         if heap.len() > arcade_account.max_top_scores as usize {
             heap.pop();
         }
-
         // Update the top users list from the heap
         arcade_account.top_users = heap.into_sorted_vec().into_iter().rev().map(Some).collect();
 
@@ -148,7 +147,7 @@ pub struct Play<'info> {
     pub user: Signer<'info>,
     /// CHECK: This is verified as the arcade admin when the PDA is derived and used for payment.
     #[account(mut)]
-    pub admin: AccountInfo<'info>, // Added safety comment
+    pub admin: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -199,8 +198,9 @@ pub struct ArcadeAccount {
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, Eq, PartialEq, Ord, PartialOrd)]
 pub struct UserScore {
-    pub user_address: Pubkey,
+    pub score: u64,
     pub nickname: String,
+    pub user_address: Pubkey,
 }
 
 #[error_code]

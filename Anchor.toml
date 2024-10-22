@@ -4,10 +4,10 @@
 resolution = true
 skip-lint = false
 
-[programs.localnet]
-arcade = "4vvLSqVKUwLigvkF6rtGsi7X6k5nCidb2gvbudhoKHvL"
-
 [programs.devnet]
+arcade = "CSSnstKmeBuQoDxpdjUd4fdqXwtM237PmTyexjizdrBN"
+
+[programs.localnet]
 arcade = "4vvLSqVKUwLigvkF6rtGsi7X6k5nCidb2gvbudhoKHvL"
 
 [registry]
