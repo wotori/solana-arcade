@@ -1,5 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::invoke, system_instruction};
+use anchor_lang::solana_program::{
+    program::{invoke, invoke_signed},
+    system_instruction,
+    sysvar::rent::Rent,
+};
 
 declare_id!("CSSnstKmeBuQoDxpdjUd4fdqXwtM237PmTyexjizdrBN");
 
@@ -21,6 +25,7 @@ pub mod arcade_rewards {
         arcade_account.total_price_distributed = 0;
         arcade_account.game_counter = 0;
         arcade_account.top_users = vec![None; max_top_scores as usize];
+        arcade_account.bump = ctx.bumps.arcade_account;
 
         Ok(())
     }
@@ -71,16 +76,31 @@ pub mod arcade_rewards {
             CustomError::Unauthorized
         );
 
-        // Collect existing scores and add the new one
+        // Ensure the user account matches the user address in the score
+        require!(
+            ctx.accounts.user.key() == user_score.user_address,
+            CustomError::InvalidUserAccount
+        );
+
+        // Collect existing scores and sort them in descending order
         let mut scores: Vec<UserScore> = arcade_account
             .top_users
             .iter()
             .filter_map(|x| x.clone())
             .collect();
 
-        scores.push(user_score);
+        scores.sort_by(|a, b| b.score.cmp(&a.score));
 
-        // Sort the scores in descending order
+        // Get the highest score before adding the new score
+        let highest_score_before = scores.first().map(|s| s.score);
+
+        // Check if the new score exceeds the highest score and is not equal
+        let is_new_highest = highest_score_before.map_or(true, |s| user_score.score > s);
+
+        // Add the new user score to the list
+        scores.push(user_score.clone());
+
+        // Sort the scores again after adding the new score
         scores.sort_by(|a, b| b.score.cmp(&a.score));
 
         // Keep only the top N scores
@@ -88,6 +108,46 @@ pub mod arcade_rewards {
 
         // Update the top_users
         arcade_account.top_users = scores.into_iter().map(Some).collect();
+
+        // If the new score is the highest, award the prize pool to the user
+        if is_new_highest {
+            // Calculate the rent-exempt minimum balance
+            let rent = Rent::get()?;
+            let min_balance = rent.minimum_balance(arcade_account.to_account_info().data_len());
+
+            // Calculate the prize amount (total lamports minus minimum balance)
+            let total_lamports = arcade_account.to_account_info().lamports();
+            let prize_amount = total_lamports.saturating_sub(min_balance);
+
+            // Ensure there is a prize to distribute
+            if prize_amount > 0 {
+                // Prepare the seeds for signing
+                let bump = arcade_account.bump;
+                let seeds = &[b"arcade_account", arcade_account.admin.as_ref(), &[bump]];
+                let signer_seeds = &[&seeds[..]];
+
+                // Transfer the prize amount from the arcade account to the user
+                invoke_signed(
+                    &system_instruction::transfer(
+                        &arcade_account.key(),
+                        &ctx.accounts.user.key(),
+                        prize_amount,
+                    ),
+                    &[
+                        arcade_account.to_account_info(),
+                        ctx.accounts.user.to_account_info(),
+                        ctx.accounts.system_program.to_account_info(),
+                    ],
+                    signer_seeds,
+                )?;
+
+                // Update the total price distributed
+                arcade_account.total_price_distributed = arcade_account
+                    .total_price_distributed
+                    .checked_add(prize_amount)
+                    .ok_or(ProgramError::InvalidInstructionData)?;
+            }
+        }
 
         Ok(())
     }
@@ -127,7 +187,7 @@ pub struct Initialize<'info> {
         payer = admin,
         seeds = [b"arcade_account", admin.key().as_ref()],
         bump,
-        space = 8 + 32 + 4 + 256 + 4 + 8 + 8 + 8 + (max_top_scores as usize * 40)
+        space = 8 + 32 + 4 + 256 + 4 + 8 + 8 + 8 + (max_top_scores as usize * 40) + 1
     )]
     pub arcade_account: Account<'info, ArcadeAccount>,
     #[account(mut)]
@@ -140,7 +200,7 @@ pub struct Play<'info> {
     #[account(
         mut,
         seeds = [b"arcade_account", admin.key().as_ref()],
-        bump
+        bump = arcade_account.bump
     )]
     pub arcade_account: Account<'info, ArcadeAccount>,
     #[account(mut)]
@@ -156,11 +216,14 @@ pub struct AddUserScore<'info> {
     #[account(
         mut,
         seeds = [b"arcade_account", arcade_account.admin.key().as_ref()],
-        bump
+        bump = arcade_account.bump
     )]
     pub arcade_account: Account<'info, ArcadeAccount>,
     #[account(mut)]
     pub admin: Signer<'info>,
+    /// CHECK: This is the user who achieved the new high score.
+    #[account(mut)]
+    pub user: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -169,7 +232,7 @@ pub struct UpdatePrice<'info> {
     #[account(
         mut,
         seeds = [b"arcade_account", arcade_account.admin.key().as_ref()],
-        bump
+        bump = arcade_account.bump
     )]
     pub arcade_account: Account<'info, ArcadeAccount>,
     #[account(mut)]
@@ -180,7 +243,7 @@ pub struct UpdatePrice<'info> {
 pub struct GetState<'info> {
     #[account(
         seeds = [b"arcade_account", arcade_account.admin.key().as_ref()],
-        bump
+        bump = arcade_account.bump
     )]
     pub arcade_account: Account<'info, ArcadeAccount>,
 }
@@ -194,6 +257,7 @@ pub struct ArcadeAccount {
     pub max_top_scores: u8,
     pub price_per_game: u64,
     pub top_users: Vec<Option<UserScore>>,
+    pub bump: u8,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, Eq, PartialEq, Ord, PartialOrd)]
@@ -209,4 +273,6 @@ pub enum CustomError {
     IncorrectPaymentAmount,
     #[msg("Unauthorized action")]
     Unauthorized,
+    #[msg("Invalid user account")]
+    InvalidUserAccount,
 }

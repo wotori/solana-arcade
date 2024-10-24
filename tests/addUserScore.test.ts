@@ -2,7 +2,7 @@
 
 import { expect } from "chai";
 import * as anchor from "@coral-xyz/anchor";
-import { initAdmin, createUser, program } from "./helpers";
+import { initAdmin, createUser, program, provider } from "./helpers";
 
 describe("Add User Score", () => {
   let admin: anchor.web3.Keypair;
@@ -32,63 +32,61 @@ describe("Add User Score", () => {
       .rpc();
   });
 
-  it("Allows admin to add user scores and handles top users correctly", async () => {
+  it("Distributes prize to the user when a new high score is achieved", async () => {
     // Create users
     const user1 = await createUser();
     const user2 = await createUser();
     const user3 = await createUser();
     const user4 = await createUser();
 
-    // Define user scores with correct field names
+    // Define user scores
     const scores = [
       {
         score: new anchor.BN(1),
-        user_address: user1.publicKey,
+        userAddress: user1.publicKey,
         nickname: "Alice",
+        user: user1,
       },
       {
         score: new anchor.BN(3),
-        user_address: user2.publicKey,
+        userAddress: user2.publicKey,
         nickname: "Bob",
+        user: user2,
       },
       {
         score: new anchor.BN(10),
-        user_address: user3.publicKey,
+        userAddress: user3.publicKey,
         nickname: "Charlie",
+        user: user3,
       },
       {
         score: new anchor.BN(100),
-        user_address: user4.publicKey,
+        userAddress: user4.publicKey,
         nickname: "Dave",
+        user: user4,
       },
     ];
 
-    // Admin adds scores
-    for (const score of scores.slice(0, 3)) {
+    // Admin adds the first three scores
+    for (const scoreData of scores.slice(0, 3)) {
       await program.methods
-        .addUserScore(score)
+        .addUserScore({
+          score: scoreData.score,
+          userAddress: scoreData.userAddress,
+          nickname: scoreData.nickname,
+        })
         .accounts({
           arcadeAccount: arcadeAccountPDA,
           admin: admin.publicKey,
+          user: scoreData.userAddress, // Include user account
           systemProgram: anchor.web3.SystemProgram.programId,
         } as any)
         .signers([admin])
         .rpc();
     }
 
-    // Fetch and log the arcade account state after first three scores
+    // Fetch and assert the arcade account state after first three scores
     let account = await program.account.arcadeAccount.fetch(arcadeAccountPDA);
-
-    console.log("Top users after adding first three scores:");
-    account.topUsers.forEach((user: any, index: number) => {
-      if (user) {
-        console.log(
-          `${index + 1}: ${user.nickname} - ${user.score.toNumber()}`
-        );
-      } else {
-        console.log(`${index + 1}: null`);
-      }
-    });
 
     // Expected order after first three scores
     expect(account.topUsers.length).to.equal(3);
@@ -96,38 +94,68 @@ describe("Add User Score", () => {
     expect(account.topUsers[1]?.nickname).to.equal("Bob");
     expect(account.topUsers[2]?.nickname).to.equal("Alice");
 
-    // Add the fourth score
+    // Get balances before adding the fourth score
+    const arcadeBalanceBefore = await provider.connection.getBalance(
+      arcadeAccountPDA
+    );
+    const daveBalanceBefore = await provider.connection.getBalance(
+      user4.publicKey
+    );
+
+    // Get account info to determine data length for rent exemption
+    const accountInfo = await provider.connection.getAccountInfo(
+      arcadeAccountPDA
+    );
+
+    // Add the fourth score (new high score by Dave)
     await program.methods
-      .addUserScore(scores[3])
+      .addUserScore({
+        score: scores[3].score,
+        userAddress: scores[3].userAddress,
+        nickname: scores[3].nickname,
+      })
       .accounts({
         arcadeAccount: arcadeAccountPDA,
         admin: admin.publicKey,
+        user: scores[3].userAddress, // Dave's account
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
       .signers([admin])
       .rpc();
 
-    // Fetch and log the updated arcade account state
+    // Fetch balances after adding the fourth score
+    const arcadeBalanceAfter = await provider.connection.getBalance(
+      arcadeAccountPDA
+    );
+    const daveBalanceAfter = await provider.connection.getBalance(
+      user4.publicKey
+    );
+
+    // Fetch the updated arcade account state
     account = await program.account.arcadeAccount.fetch(arcadeAccountPDA);
 
-    console.log("Top users after adding fourth score:");
-    account.topUsers.forEach((user: any, index: number) => {
-      if (user) {
-        console.log(
-          `${index + 1}: ${user.nickname} - ${user.score.toNumber()}`
-        );
-      } else {
-        console.log(`${index + 1}: null`);
-      }
-    });
-
-    // Adjust the assertions based on the observed order
+    // Expected order after fourth score
     expect(account.topUsers.length).to.equal(3);
-    // TODO: ...
     expect(account.topUsers[0]?.nickname).to.equal("Dave");
     expect(account.topUsers[1]?.nickname).to.equal("Charlie");
     expect(account.topUsers[2]?.nickname).to.equal("Bob");
     expect(account.topUsers.some((user: any) => user?.nickname === "Alice")).to
       .be.false;
+
+    // Calculate the rent-exempt minimum balance
+    const rentExemptMinimum =
+      await provider.connection.getMinimumBalanceForRentExemption(
+        accountInfo?.data.length || 0
+      );
+
+    // Calculate the expected prize amount
+    const prizeAmount = arcadeBalanceBefore - rentExemptMinimum;
+
+    // Verify that the prize amount was transferred to Dave
+    expect(arcadeBalanceAfter).to.equal(rentExemptMinimum);
+    expect(daveBalanceAfter).to.equal(daveBalanceBefore + prizeAmount);
+
+    // Check that totalPriceDistributed is updated correctly
+    expect(account.totalPriceDistributed.toNumber()).to.equal(prizeAmount);
   });
 });
