@@ -1,5 +1,7 @@
 # Arcade Smart Contract
 
+![alt decentralized arcade](https://i.ibb.co/jktJ4Jt/aaarcade.jpg)
+
 This project implements a Solana-based smart contract designed to manage top users in games. Built using the Anchor framework, it supports features like tracking top scores, managing administrators, and handling in-game payments. This contract is scalable and can be integrated into games to manage player leaderboards and distribute rewards.
 
 # JFYI
@@ -19,6 +21,28 @@ This project builds on the existing smart contract [CW-Arcade](https://github.co
 - **Solana**
 - **Anchor Framework**
 - **Rust**
+
+## About Tests
+
+Currently, there is no live dApp utilizing this smart contract, so comprehensive unit tests have been implemented to ensure functionality. These tests cover the following scenarios:
+
+- **Initialize Arcade Account**
+
+  - ✔ Initializes the arcade account with a PDA
+
+- **Play Game**
+
+  - ✔ Allows a user to play a game
+
+- **Add User Score**
+
+  - ✔ Distributes a prize to the user when a new high score is achieved
+
+- **Get Arcade State**
+
+  - ✔ Retrieves the correct state using `get_state` functions
+
+Overall, the test suite completes successfully with **4 passing tests**.
 
 ### Development
 
