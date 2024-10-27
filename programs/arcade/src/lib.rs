@@ -1,8 +1,11 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_lang::solana_program::{
+    program::{invoke, invoke_signed},
+    system_instruction,
+    sysvar::rent::Rent,
+};
 
-// Replace with your actual program ID
-declare_id!("CrxQKgLZU7bnm5yPsn4tMvnK9qBWDCtzoz3NCvk39eV3");
+declare_id!("EVxipTzjmJgnsfTXxKpQSJFeS6rTuYAgmuLKTSBjAP9E");
 
 #[program]
 pub mod arcade {
@@ -10,315 +13,266 @@ pub mod arcade {
 
     pub fn initialize(
         ctx: Context<Initialize>,
-        admins: Vec<Pubkey>,
         arcade_name: String,
-        max_top_scores: u32,
+        max_top_scores: u8,
         price_per_game: u64,
     ) -> Result<()> {
-        let arcade_account = &mut ctx.accounts.arcade;
-        arcade_account.admins = admins;
+        let arcade_account = &mut ctx.accounts.arcade_account;
+        arcade_account.admin = *ctx.accounts.admin.key;
         arcade_account.arcade_name = arcade_name;
         arcade_account.max_top_scores = max_top_scores;
-        arcade_account.game_counter = 0;
         arcade_account.price_per_game = price_per_game;
         arcade_account.total_price_distributed = 0;
-
-        // Safely retrieve the bump for "arcade"
-        arcade_account.bump = ctx.bumps.arcade;
-
-        // Safely retrieve the bump for "prize_pool"
-        arcade_account.prize_pool_bump = ctx.bumps.prize_pool_token_account;
-
-        arcade_account.mint = ctx.accounts.mint.key();
+        arcade_account.game_counter = 0;
+        arcade_account.top_users = vec![None; max_top_scores as usize];
+        arcade_account.bump = ctx.bumps.arcade_account;
 
         Ok(())
     }
 
-    pub fn add_admin(ctx: Context<AddAdmin>, new_admins: Vec<Pubkey>) -> Result<()> {
-        let arcade = &mut ctx.accounts.arcade;
-        require!(
-            arcade.admins.contains(&ctx.accounts.admin.key()),
-            ArcadeError::Unauthorized
-        );
-
-        arcade.admins.extend(new_admins);
-        Ok(())
-    }
-
-    pub fn leave(ctx: Context<Leave>) -> Result<()> {
-        let arcade = &mut ctx.accounts.arcade;
-        arcade.admins.retain(|&x| x != ctx.accounts.admin.key());
-        Ok(())
-    }
-
-    pub fn play(ctx: Context<Play>) -> Result<()> {
-        let arcade = &mut ctx.accounts.arcade;
-        let price = arcade.price_per_game;
-
-        let player_balance = ctx.accounts.player_token_account.amount;
-        require!(player_balance >= price, ArcadeError::InsufficientFunds);
-
-        // Transfer tokens from player to prize pool
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.player_token_account.to_account_info(),
-            to: ctx.accounts.prize_pool_token_account.to_account_info(),
-            authority: ctx.accounts.player.to_account_info(),
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-        token::transfer(cpi_ctx, price)?;
-
-        arcade.game_counter += 1;
-
-        // Emit an event for off-chain tracking
-        emit!(PlayEvent {
-            player: ctx.accounts.player.key(),
-            arcade: arcade.key(),
-            amount: price,
-        });
-
-        Ok(())
-    }
-
-    pub fn add_top_user(ctx: Context<AddTopUser>, user: User) -> Result<()> {
-        // Collect necessary data before mutable borrow
+    pub fn play(ctx: Context<Play>, lamports: u64) -> Result<()> {
+        let arcade_account_key = ctx.accounts.arcade_account.key();
         let admin_key = ctx.accounts.admin.key();
-        let _arcade_key = ctx.accounts.arcade.key();
-        let amount = ctx.accounts.prize_pool_token_account.amount;
-        let bump = ctx.accounts.arcade.bump;
 
-        // Determine if we need to perform CPI and update
-        let should_update;
+        let arcade_account = &mut ctx.accounts.arcade_account;
+        require!(
+            lamports == arcade_account.price_per_game,
+            CustomError::IncorrectPaymentAmount
+        );
 
-        {
-            // Start mutable borrow
-            let arcade = &mut ctx.accounts.arcade;
+        let user_key = ctx.accounts.user.key();
 
-            require!(
-                arcade.admins.contains(&admin_key),
-                ArcadeError::Unauthorized
-            );
+        // Transfer payment to the arcade program account
+        invoke(
+            &system_instruction::transfer(&user_key, &arcade_account_key, lamports / 2),
+            &[
+                ctx.accounts.user.to_account_info(),
+                arcade_account.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
 
-            let max_scores = arcade.max_top_scores as usize;
+        // Transfer payment to the admin account
+        invoke(
+            &system_instruction::transfer(&user_key, &admin_key, lamports / 2),
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.admin.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
 
-            if arcade.top_users.len() < max_scores {
-                arcade.top_users.push(user.clone());
-                arcade.top_users.sort_by(|a, b| b.score.cmp(&a.score));
-                return Ok(());
-            } else if let Some(lowest_user) = arcade.top_users.last() {
-                if user.score > lowest_user.score {
-                    should_update = true;
-                } else {
-                    return Ok(());
-                }
-            } else {
-                return Ok(());
+        // Increase the game counter
+        arcade_account.game_counter += 1;
+        Ok(())
+    }
+
+    pub fn add_user_score(ctx: Context<AddUserScore>, user_score: UserScore) -> Result<()> {
+        let arcade_account = &mut ctx.accounts.arcade_account;
+
+        // Authorization check
+        require!(
+            arcade_account.admin == *ctx.accounts.admin.key,
+            CustomError::Unauthorized
+        );
+
+        // Ensure the user account matches the user address in the score
+        require!(
+            ctx.accounts.user.key() == user_score.user_address,
+            CustomError::InvalidUserAccount
+        );
+
+        // Collect existing scores and sort them in descending order
+        let mut scores: Vec<UserScore> = arcade_account
+            .top_users
+            .iter()
+            .filter_map(|x| x.clone())
+            .collect();
+
+        scores.sort_by(|a, b| b.score.cmp(&a.score));
+
+        // Get the highest score before adding the new score
+        let highest_score_before = scores.first().map(|s| s.score);
+
+        // Check if the new score exceeds the highest score and is not equal
+        let is_new_highest = highest_score_before.map_or(true, |s| user_score.score > s);
+
+        // Add the new user score to the list
+        scores.push(user_score.clone());
+
+        // Sort the scores again after adding the new score
+        scores.sort_by(|a, b| b.score.cmp(&a.score));
+
+        // Keep only the top N scores
+        scores.truncate(arcade_account.max_top_scores as usize);
+
+        // Update the top_users
+        arcade_account.top_users = scores.into_iter().map(Some).collect();
+
+        // If the new score is the highest, award the prize pool to the user
+        if is_new_highest {
+            // Calculate the rent-exempt minimum balance
+            let rent = Rent::get()?;
+            let min_balance = rent.minimum_balance(arcade_account.to_account_info().data_len());
+
+            // Calculate the prize amount (total lamports minus minimum balance)
+            let total_lamports = arcade_account.to_account_info().lamports();
+            let prize_amount = total_lamports.saturating_sub(min_balance);
+
+            // Ensure there is a prize to distribute
+            if prize_amount > 0 {
+                // Prepare the seeds for signing
+                let bump = arcade_account.bump;
+                let seeds = &[b"arcade_account", arcade_account.admin.as_ref(), &[bump]];
+                let signer_seeds = &[&seeds[..]];
+
+                // Transfer the prize amount from the arcade account to the user
+                invoke_signed(
+                    &system_instruction::transfer(
+                        &arcade_account.key(),
+                        &ctx.accounts.user.key(),
+                        prize_amount,
+                    ),
+                    &[
+                        arcade_account.to_account_info(),
+                        ctx.accounts.user.to_account_info(),
+                        ctx.accounts.system_program.to_account_info(),
+                    ],
+                    signer_seeds,
+                )?;
+
+                // Update the total price distributed
+                arcade_account.total_price_distributed = arcade_account
+                    .total_price_distributed
+                    .checked_add(prize_amount)
+                    .ok_or(ProgramError::InvalidInstructionData)?;
             }
-            // Mutable borrow ends here
-        }
-
-        // Now we can immutably borrow `ctx.accounts.arcade`
-        if should_update {
-            let arcade_info = ctx.accounts.arcade.to_account_info();
-
-            // Perform the CPI with the arcade's authority
-            let seeds = &[b"arcade".as_ref(), &[bump]];
-            let signer = &[&seeds[..]];
-
-            let cpi_accounts = Transfer {
-                from: ctx.accounts.prize_pool_token_account.to_account_info(),
-                to: ctx.accounts.user_token_account.to_account_info(),
-                authority: arcade_info.clone(),
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
-            token::transfer(cpi_ctx, amount)?;
-
-            // Re-borrow `arcade` mutably after CPI to update state
-            let arcade = &mut ctx.accounts.arcade;
-            arcade.total_price_distributed += amount;
-            arcade.top_users.pop();
-            arcade.top_users.push(user);
-            arcade.top_users.sort_by(|a, b| b.score.cmp(&a.score));
         }
 
         Ok(())
     }
 
-    pub fn update_price(ctx: Context<UpdatePrice>, price: u64) -> Result<()> {
-        let arcade = &mut ctx.accounts.arcade;
+    pub fn update_price(ctx: Context<UpdatePrice>, new_price: u64) -> Result<()> {
+        let arcade_account = &mut ctx.accounts.arcade_account;
         require!(
-            arcade.admins.contains(&ctx.accounts.admin.key()),
-            ArcadeError::Unauthorized
+            arcade_account.admin == *ctx.accounts.admin.key,
+            CustomError::Unauthorized
         );
-        arcade.price_per_game = price;
-
-        // Emit an event to indicate price update
-        emit!(PriceUpdateEvent {
-            arcade: arcade.key(),
-            new_price: price,
-            updated_by: ctx.accounts.admin.key(),
-        });
-
+        arcade_account.price_per_game = new_price;
         Ok(())
+    }
+
+    pub fn get_total_price_distributed(ctx: Context<GetState>) -> Result<u64> {
+        Ok(ctx.accounts.arcade_account.total_price_distributed)
+    }
+
+    pub fn get_top_users(ctx: Context<GetState>) -> Result<Vec<Option<UserScore>>> {
+        Ok(ctx.accounts.arcade_account.top_users.clone())
+    }
+
+    pub fn get_game_counter(ctx: Context<GetState>) -> Result<u64> {
+        Ok(ctx.accounts.arcade_account.game_counter)
+    }
+
+    pub fn get_price_per_game(ctx: Context<GetState>) -> Result<u64> {
+        Ok(ctx.accounts.arcade_account.price_per_game)
     }
 }
 
 #[derive(Accounts)]
+#[instruction(arcade_name: String, max_top_scores: u8, price_per_game: u64)]
 pub struct Initialize<'info> {
     #[account(
         init,
-        seeds = [b"arcade"],
+        payer = admin,
+        seeds = [b"arcade_account", admin.key().as_ref()],
         bump,
-        payer = initializer,
-        space = Arcade::SIZE
+        space = 8 + 32 + 4 + 256 + 4 + 8 + 8 + 8 + (max_top_scores as usize * 40) + 1
     )]
-    pub arcade: Account<'info, Arcade>,
+    pub arcade_account: Account<'info, ArcadeAccount>,
     #[account(mut)]
-    pub initializer: Signer<'info>,
-    /// CHECK: This is safe because we don't read or write from this account
-    pub mint: AccountInfo<'info>,
-    #[account(
-        init,
-        payer = initializer,
-        seeds = [b"prize_pool", arcade.key().as_ref()],
-        bump,
-        token::mint = mint,
-        token::authority = arcade,
-    )]
-    pub prize_pool_token_account: Account<'info, TokenAccount>,
+    pub admin: Signer<'info>,
     pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>,
-    pub rent: Sysvar<'info, Rent>,
-}
-
-#[derive(Accounts)]
-pub struct AddAdmin<'info> {
-    #[account(mut)]
-    pub arcade: Account<'info, Arcade>,
-    pub admin: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct Leave<'info> {
-    #[account(mut)]
-    pub arcade: Account<'info, Arcade>,
-    pub admin: Signer<'info>,
 }
 
 #[derive(Accounts)]
 pub struct Play<'info> {
-    #[account(mut)]
-    pub arcade: Account<'info, Arcade>,
-    #[account(mut)]
-    pub player: Signer<'info>,
-    #[account(mut, constraint = player_token_account.owner == player.key())]
-    pub player_token_account: Account<'info, TokenAccount>,
     #[account(
         mut,
-        seeds = [b"prize_pool", arcade.key().as_ref()],
-        bump = arcade.prize_pool_bump,
-        token::mint = arcade.mint,
-        token::authority = arcade,
+        seeds = [b"arcade_account", admin.key().as_ref()],
+        bump = arcade_account.bump
     )]
-    pub prize_pool_token_account: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
+    pub arcade_account: Account<'info, ArcadeAccount>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    /// CHECK: This is verified as the arcade admin when the PDA is derived and used for payment.
+    #[account(mut)]
+    pub admin: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct AddTopUser<'info> {
-    #[account(mut)]
-    pub arcade: Account<'info, Arcade>,
-    pub admin: Signer<'info>,
+pub struct AddUserScore<'info> {
     #[account(
         mut,
-        seeds = [b"prize_pool", arcade.key().as_ref()],
-        bump = arcade.prize_pool_bump,
-        token::mint = arcade.mint,
-        token::authority = arcade,
+        seeds = [b"arcade_account", arcade_account.admin.key().as_ref()],
+        bump = arcade_account.bump
     )]
-    pub prize_pool_token_account: Account<'info, TokenAccount>,
+    pub arcade_account: Account<'info, ArcadeAccount>,
     #[account(mut)]
-    pub user_token_account: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
+    pub admin: Signer<'info>,
+    /// CHECK: This is the user who achieved the new high score.
+    #[account(mut)]
+    pub user: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct UpdatePrice<'info> {
+    #[account(
+        mut,
+        seeds = [b"arcade_account", arcade_account.admin.key().as_ref()],
+        bump = arcade_account.bump
+    )]
+    pub arcade_account: Account<'info, ArcadeAccount>,
     #[account(mut)]
-    pub arcade: Account<'info, Arcade>,
     pub admin: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct GetState<'info> {
+    #[account(
+        seeds = [b"arcade_account", arcade_account.admin.key().as_ref()],
+        bump = arcade_account.bump
+    )]
+    pub arcade_account: Account<'info, ArcadeAccount>,
+}
+
 #[account]
-pub struct Arcade {
-    pub admins: Vec<Pubkey>,
+pub struct ArcadeAccount {
+    pub admin: Pubkey,
     pub arcade_name: String,
-    pub max_top_scores: u32,
-    pub top_users: Vec<User>,
-    pub game_counter: u64,
-    pub price_per_game: u64,
     pub total_price_distributed: u64,
+    pub game_counter: u64,
+    pub max_top_scores: u8,
+    pub price_per_game: u64,
+    pub top_users: Vec<Option<UserScore>>,
     pub bump: u8,
-    pub mint: Pubkey,
-    pub prize_pool_bump: u8,
 }
 
-impl Arcade {
-    // Maximum sizes for dynamic fields
-    pub const MAX_ADMINS: usize = 3;
-    pub const MAX_ARCADE_NAME_LENGTH: usize = 64;
-    pub const MAX_TOP_USERS: usize = 10;
-    pub const SIZE: usize = 8 + // Discriminator
-        4 + (Self::MAX_ADMINS * 32) + // admins Vec<Pubkey>
-        4 + Self::MAX_ARCADE_NAME_LENGTH + // arcade_name String
-        4 + // max_top_scores u32
-        4 + (Self::MAX_TOP_USERS * User::SIZE) + // top_users Vec<User>
-        8 + // game_counter u64
-        8 + // price_per_game u64
-        8 + // total_price_distributed u64
-        1 + // bump u8
-        32 + // mint Pubkey
-        1; // prize_pool_bump u8
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct User {
-    pub name: String,
-    pub address: Pubkey,
-    pub score: u16,
-}
-
-impl User {
-    pub const MAX_NAME_LENGTH: usize = 32; // Adjust as needed
-    pub const SIZE: usize = 4 + Self::MAX_NAME_LENGTH + // name String
-        32 + // address Pubkey
-        2; // score u16
-}
-
-// Events for off-chain tracking
-#[event]
-pub struct PlayEvent {
-    pub player: Pubkey,
-    pub arcade: Pubkey,
-    pub amount: u64,
-}
-
-#[event]
-pub struct PriceUpdateEvent {
-    pub arcade: Pubkey,
-    pub new_price: u64,
-    pub updated_by: Pubkey,
+#[derive(Clone, AnchorSerialize, AnchorDeserialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct UserScore {
+    pub score: u64,
+    pub nickname: String,
+    pub user_address: Pubkey,
 }
 
 #[error_code]
-pub enum ArcadeError {
+pub enum CustomError {
+    #[msg("Incorrect payment amount")]
+    IncorrectPaymentAmount,
     #[msg("Unauthorized action")]
     Unauthorized,
-    #[msg("Score too low to enter top scores")]
-    ScoreTooLow,
-    #[msg("Missing bump for PDA")]
-    MissingBump,
-    #[msg("Insufficient funds for game")]
-    InsufficientFunds,
+    #[msg("Invalid user account")]
+    InvalidUserAccount,
 }
