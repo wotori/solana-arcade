@@ -1,6 +1,6 @@
 # Arcade Smart Contract
 
-![alt decentralized arcade](https://i.ibb.co/hDgRn4R/arcade.jpg)
+![arcade](https://github.com/user-attachments/assets/a626bcd9-305a-4106-8ac2-79c5469b2ace)
 
 This project implements a Solana-based smart contract designed to manage top users in games. Built using the Anchor framework, it supports features like tracking top scores, managing administrators, and handling in-game payments. This contract is scalable and can be integrated into games to manage player leaderboards and distribute rewards.
 
